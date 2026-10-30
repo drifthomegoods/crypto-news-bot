@@ -215,27 +215,28 @@ def fmt_change(c: float | None) -> str:
     return f"{arrow} {c:+.1f}%"
 
 
-FG_HY = {
-    "Extreme Fear": "ծայրահեղ վախ",
-    "Fear": "վախ",
-    "Neutral": "չեզոք",
-    "Greed": "ագահություն",
-    "Extreme Greed": "ծայրահեղ ագահություն",
-}
+FG_EMOJI = {"Extreme Fear": "😱", "Fear": "😨", "Neutral": "😐", "Greed": "🤑", "Extreme Greed": "🔥"}
 
 
 def facts_block(coins: list[str], market: dict) -> str:
-    lines = []
+    """Monospaced market table, trader style (shown inside <pre>)."""
+    rows = []
     shown = [c for c in coins if c in market["coins"]][:3]
-    if not shown and "BTC" in market["coins"]:
-        shown = ["BTC"]
+    if "BTC" not in shown and "BTC" in market["coins"]:
+        shown = (shown + ["BTC"])[:3] if shown else ["BTC", "ETH"]
+        shown = [s for s in shown if s in market["coins"]]
     for sym in shown:
         c = market["coins"][sym]
-        lines.append(f"• {sym}: {fmt_price(c['price'])} ({fmt_change(c['change_24h'])} 24ժ)")
+        ch = c["change_24h"]
+        chg = "" if ch is None else f"{'▲' if ch >= 0 else '▼'} {abs(ch):.2f}%"
+        rows.append(f"{sym:<5} {fmt_price(c['price']):>10}  {chg}")
     fg = market.get("fear_greed")
     if fg:
-        lines.append(f"• Fear & Greed: {fg['value']} ({FG_HY.get(fg['label'], fg['label'])})")
-    return "\n".join(lines)
+        rows.append(f"{'F&G':<5} {str(fg['value']):>10}  {fg['label']} {FG_EMOJI.get(fg['label'], '')}".rstrip())
+    g = market.get("global")
+    if g:
+        rows.append(f"{'BTC.D':<5} {g['btc_dominance']:>9.1f}%")
+    return "\n".join(rows)
 
 
 def market_summary_for_model(market: dict) -> str:
@@ -327,32 +328,53 @@ def parse_stories(text: str) -> list[dict]:
 
 # ---------------------------------------------------------------- Telegram
 
-SENTIMENT_EMOJI = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
-SENTIMENT_HY = {"bullish": "դրական", "bearish": "բացասական", "neutral": "չեզոք"}
+SENTIMENT = {
+    "bullish": ("🟢", "BULLISH"),
+    "bearish": ("🔴", "BEARISH"),
+    "neutral": ("⚪️", "NEUTRAL"),
+}
+SOURCE_NAMES = {
+    "coindesk.com": "CoinDesk",
+    "cointelegraph.com": "Cointelegraph",
+    "decrypt.co": "Decrypt",
+    "theblock.co": "The Block",
+    "bitcoinmagazine.com": "Bitcoin Magazine",
+    "cryptoslate.com": "CryptoSlate",
+}
+DIVIDER = "━━━━━━━━━━━━━━━━━━"
+
+
+def source_name(url: str) -> str:
+    from urllib.parse import urlparse
+
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    return SOURCE_NAMES.get(host, host or "Source")
 
 
 def format_post(story: dict, market: dict) -> str:
     e = html.escape
     sentiment = story.get("sentiment", "neutral")
-    emoji = SENTIMENT_EMOJI.get(sentiment, "⚪")
+    emoji, label = SENTIMENT.get(sentiment, SENTIMENT["neutral"])
     importance = int(story.get("importance", 7))
-    badge = "🚨 " if importance >= 9 else ""
+    impact = "🚨 HIGH IMPACT" if importance >= 9 else "⚡️ MEDIUM IMPACT"
     coins = [str(c).upper() for c in story.get("coins", [])]
 
     parts = [
-        f"{badge}{emoji} <b>{e(story['title_hy'])}</b>",
+        f"{emoji} <b>{label}</b>  ·  {impact}",
+        DIVIDER,
+        f"<b>{e(story['title_hy'])}</b>",
         "",
         e(story["body_hy"]),
     ]
     if story.get("impact_hy"):
-        parts += ["", f"💡 <i>{e(story['impact_hy'])}</i>"]
+        parts += ["", f"<blockquote>💡 <b>Impact:</b> {e(story['impact_hy'])}</blockquote>"]
     facts = facts_block(coins, market)
     if facts:
-        parts += ["", "📊 <b>Փաստեր հիմա</b>", e(facts)]
-    parts += ["", f'🔗 <a href="{e(story["source_url"], quote=True)}">Աղբյուր</a>']
+        parts += ["", "📊 <b>Market</b>", f"<pre>{e(facts)}</pre>"]
+    url = story["source_url"]
+    parts += [DIVIDER, f'🔗 <a href="{e(url, quote=True)}">{e(source_name(url))}</a>']
     tags = " ".join(f"#{c}" for c in coins[:4])
-    tags = (tags + f" #{SENTIMENT_HY.get(sentiment, 'չեզոք')}").strip()
-    parts += ["", tags]
+    parts += [f"{tags} #{label.capitalize()}".strip()]
     return "\n".join(parts)[:4000]
 
 
@@ -386,7 +408,10 @@ def send_telegram(text: str) -> None:
 def main() -> int:
     if TEST_MESSAGE:
         market = fetch_market()
-        send_telegram("✅ <b>Բոտը միացված է և աշխատում է</b>\n\n" + html.escape(facts_block(["BTC", "ETH"], market)))
+        send_telegram(
+            "✅ <b>BOT ONLINE</b>\n" + DIVIDER + "\nԲոտը միացված է և աշխատում է\n\n"
+            "📊 <b>Market</b>\n<pre>" + html.escape(facts_block(["BTC", "ETH"], market)) + "</pre>"
+        )
         log.info("test message sent")
         return 0
 
