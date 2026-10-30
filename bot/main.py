@@ -216,6 +216,13 @@ def fmt_change(c: float | None) -> str:
 
 
 FG_EMOJI = {"Extreme Fear": "😱", "Fear": "😨", "Neutral": "😐", "Greed": "🤑", "Extreme Greed": "🔥"}
+FG_RU = {
+    "Extreme Fear": "Экстрим. страх",
+    "Fear": "Страх",
+    "Neutral": "Нейтрально",
+    "Greed": "Жадность",
+    "Extreme Greed": "Экстрим. жадность",
+}
 
 
 def facts_block(coins: list[str], market: dict) -> str:
@@ -232,7 +239,7 @@ def facts_block(coins: list[str], market: dict) -> str:
         rows.append(f"{sym:<5} {fmt_price(c['price']):>10}  {chg}")
     fg = market.get("fear_greed")
     if fg:
-        rows.append(f"{'F&G':<5} {str(fg['value']):>10}  {fg['label']} {FG_EMOJI.get(fg['label'], '')}".rstrip())
+        rows.append(f"{'F&G':<5} {str(fg['value']):>10}  {FG_RU.get(fg['label'], fg['label'])} {FG_EMOJI.get(fg['label'], '')}".rstrip())
     g = market.get("global")
     if g:
         rows.append(f"{'BTC.D':<5} {g['btc_dominance']:>9.1f}%")
@@ -329,9 +336,9 @@ def parse_stories(text: str) -> list[dict]:
 # ---------------------------------------------------------------- Telegram
 
 SENTIMENT = {
-    "bullish": ("🟢", "BULLISH"),
-    "bearish": ("🔴", "BEARISH"),
-    "neutral": ("⚪️", "NEUTRAL"),
+    "bullish": ("🟢", "БЫЧИЙ"),
+    "bearish": ("🔴", "МЕДВЕЖИЙ"),
+    "neutral": ("⚪️", "НЕЙТРАЛЬНО"),
 }
 SOURCE_NAMES = {
     "coindesk.com": "CoinDesk",
@@ -356,7 +363,7 @@ def format_post(story: dict, market: dict) -> str:
     sentiment = story.get("sentiment", "neutral")
     emoji, label = SENTIMENT.get(sentiment, SENTIMENT["neutral"])
     importance = int(story.get("importance", 7))
-    impact = "🚨 HIGH IMPACT" if importance >= 9 else "⚡️ MEDIUM IMPACT"
+    impact = "🚨 ВЫСОКОЕ ВЛИЯНИЕ" if importance >= 9 else "⚡️ СРЕДНЕЕ ВЛИЯНИЕ"
     coins = [str(c).upper() for c in story.get("coins", [])]
 
     parts = [
@@ -367,12 +374,12 @@ def format_post(story: dict, market: dict) -> str:
         e(story["body_hy"]),
     ]
     if story.get("impact_hy"):
-        parts += ["", f"<blockquote>💡 <b>Impact:</b> {e(story['impact_hy'])}</blockquote>"]
+        parts += ["", f"<blockquote>💡 <b>Влияние:</b> {e(story['impact_hy'])}</blockquote>"]
     facts = facts_block(coins, market)
     if facts:
-        parts += ["", "📊 <b>Market</b>", f"<pre>{e(facts)}</pre>"]
+        parts += ["", "📊 <b>Рынок</b>", f"<pre>{e(facts)}</pre>"]
     url = story["source_url"]
-    parts += [DIVIDER, f'🔗 <a href="{e(url, quote=True)}">{e(source_name(url))}</a>']
+    parts += [DIVIDER, f'🔗 Источник: <a href="{e(url, quote=True)}">{e(source_name(url))}</a>']
     tags = " ".join(f"#{c}" for c in coins[:4])
     parts += [f"{tags} #{label.capitalize()}".strip()]
     return "\n".join(parts)[:4000]
@@ -409,8 +416,8 @@ def main() -> int:
     if TEST_MESSAGE:
         market = fetch_market()
         send_telegram(
-            "✅ <b>BOT ONLINE</b>\n" + DIVIDER + "\nԲոտը միացված է և աշխատում է\n\n"
-            "📊 <b>Market</b>\n<pre>" + html.escape(facts_block(["BTC", "ETH"], market)) + "</pre>"
+            "✅ <b>БОТ ОНЛАЙН</b>\n" + DIVIDER + "\nԲոտը միացված է և աշխատում է\n\n"
+            "📊 <b>Рынок</b>\n<pre>" + html.escape(facts_block(["BTC", "ETH"], market)) + "</pre>"
         )
         log.info("test message sent")
         return 0
