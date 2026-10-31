@@ -96,6 +96,8 @@ def load_state() -> dict:
 
 def save_state(state: dict) -> None:
     now = time.time()
+    if ai.preferred_model:
+        state["ai_model"] = ai.preferred_model
     state["seen"] = {k: v for k, v in state["seen"].items() if now - v < SEEN_TTL_SEC}
     state["recent_posts"] = [p for p in state["recent_posts"] if now - p["ts"] < RECENT_POSTS_TTL_SEC]
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +383,7 @@ def main() -> int:
         save_state(state)
         return 0
 
+    ai.preferred_model = state.get("ai_model", "")
     log.info("%d new items, asking AI (%s)", len(new_items), ai.provider())
     market = fetch_market()
     try:

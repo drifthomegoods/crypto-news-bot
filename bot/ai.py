@@ -47,6 +47,7 @@ def provider() -> str:
 # ---------------------------------------------------------------- Gemini
 
 _gemini_models: list[str] | None = None
+preferred_model: str = ""  # last model that worked (saved in state between runs)
 
 
 def _version(name: str) -> float:
@@ -93,7 +94,9 @@ def gemini_models() -> list[str]:
     except Exception as exc:
         log.warning("could not list Gemini models: %s", exc)
     ranked = rank_gemini_models(found) or ["gemini-flash-latest", "gemini-flash-lite-latest"]
-    _gemini_models = ([forced] if forced else []) + [m for m in ranked if m != forced]
+    first = [m for m in (forced, preferred_model) if m and (m == forced or m in ranked)]
+    first = list(dict.fromkeys(first))
+    _gemini_models = first + [m for m in ranked if m not in first]
     log.info("Gemini model order: %s", ", ".join(_gemini_models[:4]))
     return _gemini_models
 
@@ -128,7 +131,7 @@ def _gemini(system: str, user: str, temperature: float) -> str:
                 errors.append(f"{model}: {type(exc).__name__}")
                 log.warning("Gemini %s: %s, trying next model", model, type(exc).__name__)
                 break
-            if r.status_code in (500, 503) and attempt == 0:
+            if r.status_code in (500, 503) and attempt == 0 and model != models[-1]:
                 log.warning("Gemini %s: HTTP %s (overloaded), retrying in 5s", model, r.status_code)
                 time.sleep(5)
                 continue
@@ -142,8 +145,14 @@ def _gemini(system: str, user: str, temperature: float) -> str:
             parts = (cands[0].get("content") or {}).get("parts", []) if cands else []
             text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
             if text.strip():
-                if model != models[0]:
+                global preferred_model
+                if model != preferred_model:
                     log.info("answered by %s", model)
+                preferred_model = model
+                # stick with the working model for the rest of this run
+                if _gemini_models and _gemini_models[0] != model:
+                    _gemini_models.remove(model)
+                    _gemini_models.insert(0, model)
                 return text
             errors.append(f"{model}: empty ({cands[0].get('finishReason') if cands else 'no candidates'})")
             log.warning("Gemini %s: empty reply, trying next model", model)
