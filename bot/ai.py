@@ -65,7 +65,12 @@ def rank_gemini_models(names: list[str]) -> list[str]:
         alias = n.endswith("-latest")
         return (lite, not alias, unstable, -_version(n), n)
 
-    return sorted(dict.fromkeys(cands), key=key)
+    cands = list(dict.fromkeys(cands))
+    # Old generations get retired for new projects; skip them when newer ones exist.
+    newest = max((_version(n) for n in cands), default=0.0)
+    if newest >= 3:
+        cands = [n for n in cands if n.endswith("-latest") or _version(n) >= 3]
+    return sorted(cands, key=key)
 
 
 def gemini_models() -> list[str]:
@@ -112,7 +117,7 @@ def _gemini(system: str, user: str, temperature: float) -> str:
     headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"], "Content-Type": "application/json"}
     errors: list[str] = []
     auth_errors = 0
-    models = gemini_models()[:6]
+    models = gemini_models()[:9]
     for model in models:
         for attempt in range(2):
             try:
