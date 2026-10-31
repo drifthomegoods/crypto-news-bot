@@ -4,17 +4,17 @@ Crypto news -> Telegram channel bot (Armenian).
 Every run:
   1. Pulls fresh items from crypto news RSS feeds.
   2. Drops anything already seen.
-  3. Asks Claude to cluster duplicates, rate importance and write short
-     Armenian summaries in its own words.
+  3. Asks AI (Gemini free tier or Claude, see ai.py) to cluster duplicates,
+     rate importance and write Armenian posts (select -> write -> proofread).
   4. Posts only important stories to Telegram, with live market facts
      (CoinGecko prices + Fear & Greed index) attached.
   5. Saves state (seen items + recent posts) to state/state.json.
 
 Required env vars:
-  TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, ANTHROPIC_API_KEY
+  TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID, and GEMINI_API_KEY (free) or ANTHROPIC_API_KEY
 Optional:
-  MIN_IMPORTANCE (default 7), MAX_POSTS_PER_RUN (default 3),
-  CLAUDE_MODEL (default claude-sonnet-5-5), MAX_AGE_HOURS (default 6),
+  MIN_IMPORTANCE (default 7), MAX_POSTS_PER_RUN (default 3), MAX_AGE_HOURS (default 6),
+  AI_PROVIDER (gemini|anthropic), GEMINI_MODEL, CLAUDE_MODEL, AI_PROOFREAD=0 to skip proofreading,
   DRY_RUN=1 (print instead of posting), TEST_MESSAGE=1 (send a test post and exit)
 """
 
@@ -34,6 +34,9 @@ from pathlib import Path
 
 import feedparser
 import requests
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ai  # noqa: E402
 
 log = logging.getLogger("newsbot")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -71,7 +74,6 @@ MIN_IMPORTANCE = int(os.getenv("MIN_IMPORTANCE", "7"))
 MAX_POSTS_PER_RUN = int(os.getenv("MAX_POSTS_PER_RUN", "3"))
 MAX_AGE_HOURS = float(os.getenv("MAX_AGE_HOURS", "6"))
 MAX_ITEMS_TO_MODEL = 40
-MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
 DRY_RUN = os.getenv("DRY_RUN") == "1"
 TEST_MESSAGE = os.getenv("TEST_MESSAGE") == "1"
 
@@ -259,78 +261,16 @@ def market_summary_for_model(market: dict) -> str:
     return "; ".join(parts) or "market data unavailable"
 
 
-# ---------------------------------------------------------------- Claude
-
-SYSTEM_PROMPT = """You are the editor of an Armenian-language Telegram channel about crypto markets.
-You receive fresh news items from several outlets, live market data, and the list of stories the channel already posted in the last 48 hours.
-
-Your job:
-1. Group items that describe the same story (different outlets often cover the same event). One story = one post.
-2. Drop stories that were already posted (compare with recent_posts) unless there is a genuinely new, material development; in that case write it as an update.
-3. Rate each remaining story's importance for crypto traders and investors, 1-10:
-   9-10: market-moving - major exchange hacks or failures, ETF approvals/rejections, Fed decisions, major regulation or court rulings, BTC/ETH moves above ~5%, large-scale liquidations, big institutional buys/sells.
-   7-8: significant - notable news about top-20 coins or major exchanges/companies, meaningful on-chain or ETF flow data, important protocol upgrades, notable regulatory steps.
-   1-6: routine - price predictions, opinion pieces, sponsored/promotional content, guides, minor altcoins, small partnerships, rehashes. 
-4. For every story rated 7 or higher, write a post in Armenian (Armenian script, natural modern Armenian, crypto terms like ETF, DeFi, stablecoin may stay in English).
-
-Writing rules:
-- Write entirely in your own words. Never copy sentences from the source; do not quote more than a few words.
-- Stick to facts present in the items or the market data. Never invent numbers, names or events. If something is unconfirmed, say so.
-- title_hy: max ~90 characters, punchy but not clickbait.
-- body_hy: 2-4 short sentences: what happened, key numbers, why it matters.
-- impact_hy: one sentence on the likely market impact and which coins are affected. Analysis, not advice.
-- coins: tickers of directly affected coins (e.g. ["BTC","BNB"]), most relevant first, may be empty.
-- sentiment: "bullish", "bearish" or "neutral".
-- source_url: the link of the most authoritative item in the group.
-- item_ids: ids of all items in the group.
-
-Return ONLY valid JSON, no markdown, in this shape:
-{"stories":[{"item_ids":["..."],"importance":8,"sentiment":"bearish","coins":["BTC"],"title_hy":"...","body_hy":"...","impact_hy":"...","source_url":"https://..."}]}
-Include only stories rated 7 or higher. If nothing qualifies, return {"stories":[]}."""
+# ---------------------------------------------------------------- AI
 
 
-def ask_claude(items: list[dict], market: dict, recent_posts: list[dict]) -> list[dict]:
-    import anthropic
-
-    client = anthropic.Anthropic()
-    payload = {
-        "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
-        "market_data": market_summary_for_model(market),
-        "recent_posts": [p["title"] for p in recent_posts],
-        "items": [
-            {k: it[k] for k in ("id", "source", "published", "title", "summary", "link")}
-            for it in items[:MAX_ITEMS_TO_MODEL]
-        ],
-    }
-    msg = client.messages.create(
-        model=MODEL,
-        max_tokens=4000,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+def ask_ai(items: list[dict], market: dict, recent_posts: list[dict]) -> list[dict]:
+    market_text = market_summary_for_model(market)
+    stories = ai.select_stories(
+        items[:MAX_ITEMS_TO_MODEL], market_text, [p["title"] for p in recent_posts], MIN_IMPORTANCE
     )
-    text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
-    return parse_stories(text)
-
-
-def parse_stories(text: str) -> list[dict]:
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        raise ValueError("no JSON in model reply")
-    data = json.loads(text[start : end + 1])
-    stories = []
-    for s in data.get("stories", []):
-        try:
-            if int(s.get("importance", 0)) < MIN_IMPORTANCE:
-                continue
-            if not s.get("title_hy") or not s.get("body_hy"):
-                continue
-            if not str(s.get("source_url", "")).startswith("http"):
-                continue
-            stories.append(s)
-        except (TypeError, ValueError):
-            continue
-    stories.sort(key=lambda s: int(s["importance"]), reverse=True)
-    return stories
+    log.info("%d stories rated %d+", len(stories), MIN_IMPORTANCE)
+    return ai.write_armenian(stories[:MAX_POSTS_PER_RUN], market_text)
 
 
 # ---------------------------------------------------------------- Telegram
@@ -441,13 +381,13 @@ def main() -> int:
         save_state(state)
         return 0
 
-    log.info("%d new items, asking %s", len(new_items), MODEL)
+    log.info("%d new items, asking AI (%s)", len(new_items), ai.provider())
     market = fetch_market()
     try:
-        stories = ask_claude(new_items, market, state["recent_posts"])
+        stories = ask_ai(new_items, market, state["recent_posts"])
     except Exception as exc:
         # Leave items unseen so the next run retries them.
-        log.error("Claude step failed: %s", exc)
+        log.error("AI step failed: %s", exc)
         save_state(state)
         return 1
 
