@@ -385,8 +385,12 @@ def main() -> int:
     market = fetch_market()
     try:
         stories = ask_ai(new_items, market, state["recent_posts"])
+    except ai.AIUnavailable as exc:
+        # Temporary (overload/timeout): leave items unseen, the next run retries them.
+        log.warning("AI temporarily unavailable, will retry next run: %s", exc)
+        save_state(state)
+        return 0
     except Exception as exc:
-        # Leave items unseen so the next run retries them.
         log.error("AI step failed: %s", exc)
         save_state(state)
         return 1

@@ -93,7 +93,13 @@ def gemini_models() -> list[str]:
     return _gemini_models
 
 
+class AIUnavailable(RuntimeError):
+    """Temporary provider problem (overload, timeout). Items are retried next run."""
+
+
 def _gemini(system: str, user: str, temperature: float) -> str:
+    import time
+
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -103,27 +109,43 @@ def _gemini(system: str, user: str, temperature: float) -> str:
             "maxOutputTokens": 8192,
         },
     }
-    last = ""
-    for model in gemini_models()[:4]:
-        r = requests.post(
-            f"{GEMINI_BASE}/models/{model}:generateContent",
-            headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"], "Content-Type": "application/json"},
-            json=body,
-            timeout=120,
-        )
-        if r.status_code in (400, 403, 404, 429, 500, 503):
-            last = f"{model}: HTTP {r.status_code} {r.text[:200]}"
-            log.warning("Gemini %s, trying next model", last)
-            continue
-        r.raise_for_status()
-        cands = r.json().get("candidates") or []
-        parts = (cands[0].get("content") or {}).get("parts", []) if cands else []
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-        if text.strip():
-            return text
-        last = f"{model}: empty reply ({cands[0].get('finishReason') if cands else 'no candidates'})"
-        log.warning("Gemini %s, trying next model", last)
-    raise RuntimeError(f"all Gemini models failed; last: {last}")
+    headers = {"x-goog-api-key": os.environ["GEMINI_API_KEY"], "Content-Type": "application/json"}
+    errors: list[str] = []
+    auth_errors = 0
+    models = gemini_models()[:6]
+    for model in models:
+        for attempt in range(2):
+            try:
+                r = requests.post(
+                    f"{GEMINI_BASE}/models/{model}:generateContent", headers=headers, json=body, timeout=90
+                )
+            except requests.RequestException as exc:
+                errors.append(f"{model}: {type(exc).__name__}")
+                log.warning("Gemini %s: %s, trying next model", model, type(exc).__name__)
+                break
+            if r.status_code in (500, 503) and attempt == 0:
+                log.warning("Gemini %s: HTTP %s (overloaded), retrying in 5s", model, r.status_code)
+                time.sleep(5)
+                continue
+            if r.status_code != 200:
+                if r.status_code in (401, 403) or "API_KEY_INVALID" in r.text:
+                    auth_errors += 1
+                errors.append(f"{model}: HTTP {r.status_code}")
+                log.warning("Gemini %s: HTTP %s %s, trying next model", model, r.status_code, r.text[:150].replace("\n", " "))
+                break
+            cands = r.json().get("candidates") or []
+            parts = (cands[0].get("content") or {}).get("parts", []) if cands else []
+            text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+            if text.strip():
+                if model != models[0]:
+                    log.info("answered by %s", model)
+                return text
+            errors.append(f"{model}: empty ({cands[0].get('finishReason') if cands else 'no candidates'})")
+            log.warning("Gemini %s: empty reply, trying next model", model)
+            break
+    if auth_errors and auth_errors == len(errors):
+        raise RuntimeError("Gemini rejected the API key - check GEMINI_API_KEY: " + "; ".join(errors))
+    raise AIUnavailable("all Gemini models busy or failed: " + "; ".join(errors))
 
 
 # ---------------------------------------------------------------- Anthropic
